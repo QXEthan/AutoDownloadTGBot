@@ -526,7 +526,8 @@ def main(update: Update, context: CallbackContext, magnet, offline_path=None):
                         context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
                         logging.error(print_info)
                         continue  # 这个文件让用户手动下载，程序处理下一个文件
-
+                    if 'result' not in response: 
+                        continue
                     gid[response['result']] = [f'{name}', down_file_id, url]
                     # context.bot.send_message(chat_id=update.effective_chat.id, text=f'{name}推送aria2下载')  # 注释掉防止发送消息过多
                     logging.info(f'{path}{name}推送aria2下载')
