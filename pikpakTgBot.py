@@ -101,23 +101,28 @@ def login(account):
         username=login_admin,
         password=login_password,
     )
+    try:
+        # 执行异步的登录和刷新操作，并等待完成
+        asyncio.run(client.login())
+        asyncio.run(client.refresh_access_token())
+        headers = client.get_headers()
+        pikpak_headers[index] = headers.copy()  # 拷贝
+        pikpak_clients[index] = client
 
-    # 执行异步的登录和刷新操作，并等待完成
-    asyncio.run(client.login())
-    asyncio.run(client.refresh_access_token())
-    headers = client.get_headers()
-    pikpak_headers[index] = headers.copy()  # 拷贝
-    pikpak_clients[index] = client
-
-    logging.info(f"账号{account}登陆成功！")
+        logging.info(f"账号{account}登陆成功！")
+        return True
+    except Exception as e:
+        logging.error(f'账号{account}登陆失败：{e}')
+        return False
 
 
 # 获得headers，用于请求api
 def get_headers(account):
     index = USER.index(account)
-
     if not pikpak_headers[index]:  # headers为空则先登录
-        login(account)
+        ok = login(account)
+        if not ok:
+            return None
     return pikpak_headers[index]
 
 
@@ -125,7 +130,9 @@ def get_clients(account):
     index = USER.index(account)
 
     if not pikpak_clients[index]:  # clients为空则先登录
-        login(account)
+        ok = login(account)
+        if not ok:
+            return None
     return pikpak_clients[index]
 
 # 离线下载磁力
@@ -133,6 +140,8 @@ def magnet_upload(file_url, account, parent_id=None, offline_path=None):
     # 请求离线下载所需数据
     login_headers = get_headers(account)
     client = get_clients(account)
+    if not login_headers or not client:
+        return None, None
     torrent_url = f"{PIKPAK_API_URL}/drive/v1/files"
     # 获取离线下载路径id
     if offline_path:
@@ -156,7 +165,9 @@ def magnet_upload(file_url, account, parent_id=None, offline_path=None):
     if "error" in torrent_result:
         if torrent_result['error_code'] == 16:
             logging.info(f"账号{account}登录过期，正在重新登录")
-            login(account)  # 重新登录该账号
+            ok = login(account)  # 重新登录该账号
+            if not ok:
+                return None, None
             login_headers = get_headers(account)
             torrent_result = requests.post(url=torrent_url, headers=login_headers, json=torrent_data, timeout=5).json()
 
@@ -189,7 +200,9 @@ def get_offline_list(account):
     if "error" in offline_list_info:
         if offline_list_info['error_code'] == 16:
             logging.info(f"账号{account}登录过期，正在重新登录")
-            login(account)
+            ok = login(account)
+            if not ok:
+                return []
             login_headers = get_headers(account)
             offline_list_info = requests.get(url=offline_list_url, headers=login_headers, timeout=5).json()
         else:
@@ -206,14 +219,16 @@ def get_download_url(file_id, account):
         login_headers = get_headers(account)
         download_url = f"{PIKPAK_API_URL}/drive/v1/files/{file_id}?_magic=2021&thumbnail_size=SIZE_LARGE"
         # 发送请求
-        download_info = requests.get(url=download_url, headers=login_headers, timeout=5).json()
-        # logging.info('返回文件信息包括：\n' + str(download_info))
+        download_info = requests.get(url=download_url, headers=login_headers, timeout=15).json()
+        logging.info('返回文件信息包括：\n' + str(download_info))
 
         # 处理错误
         if "error" in download_info:
             if download_info['error_code'] == 16:
                 logging.info(f"账号{account}登录过期，正在重新登录")
-                login(account)
+                ok = login(account)
+                if not ok:
+                    return "", ""
                 login_headers = get_headers(account)
                 download_info = requests.get(url=download_url, headers=login_headers, timeout=5).json()
             else:
@@ -242,7 +257,9 @@ def get_list(folder_id, account):
         if "error" in list_result:
             if list_result['error_code'] == 16:
                 logging.info(f"账号{account}登录过期，正在重新登录")
-                login(account)
+                ok = login(account)
+                if not ok:
+                    return file_list
                 login_headers = get_headers(account)
                 list_result = requests.get(url=list_url, headers=login_headers, timeout=5).json()
             else:
@@ -331,7 +348,9 @@ def delete_files(file_id, account, mode='normal'):
     if "error" in delete_files_result:
         if delete_files_result['error_code'] == 16:
             logging.info(f"账号{account}登录过期，正在重新登录")
-            login(account)
+            ok = login(account)
+            if not ok:
+                return False
             login_headers = get_headers(account)
             delete_files_result = requests.post(url=delete_files_url, headers=login_headers, json=delete_files_data,
                                                 timeout=5).json()
@@ -366,7 +385,9 @@ def delete_trash(file_id, account, mode='normal'):
     if "error" in delete_files_result:
         if delete_files_result['error_code'] == 16:
             logging.info(f"账号{account}登录过期，正在重新登录")
-            login(account)
+            ok = login(account)
+            if not ok:
+                return False
             login_headers = get_headers(account)
             delete_files_result = requests.post(url=delete_files_url, headers=login_headers, json=delete_files_data,
                                                 timeout=5).json()
@@ -388,68 +409,73 @@ def main(update: Update, context: CallbackContext, magnet, offline_path=None):
 
     try:  # 捕捉所有的请求超时异常
         for each_account in USER:
-            # 登录
-            login(each_account)  # 指定用哪个账户登录
-            # 离线下载并获取任务id和文件名
-            mag_id, mag_name = magnet_upload(magnet, each_account, offline_path=offline_path)
+            try: # 捕捉login异常
+                # 登录
+                # login(each_account)  # 不需要登陆，开启新thread的时候可能已经有token了，频繁登陆会触发pikpak审核。
+                # 离线下载并获取任务id和文件名
+                mag_id, mag_name = magnet_upload(magnet, each_account, offline_path=offline_path)
 
-            if not mag_id:  # 如果添加离线失败，那就试试下一个账号
-                if each_account == USER[-1]:  # 最后一个账号仍然无法离线下载
-                    print_info = f'{mag_url_simple}所有账号均离线下载失败！可能是所有账号免费离线次数用尽，或者文件大小超过网盘剩余容量！'
-                    context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
-                    logging.warning(print_info)
-                continue
+                if not mag_id:  # 如果添加离线失败，那就试试下一个账号
+                    if each_account == USER[-1]:  # 最后一个账号仍然无法离线下载
+                        print_info = f'{mag_url_simple}所有账号均离线下载失败！可能是所有账号免费离线次数用尽，或者文件大小超过网盘剩余容量！'
+                        context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
+                        logging.warning(print_info)
+                    continue
 
-            # 查询是否离线完成
-            done = False  # 是否完成标志
-            zero_process = False  # 是否卡在零进度标志
-            logging.info('5s后将检查离线下载进度...')
-            sleep(5)  # 等待5秒，一般是秒离线，可以保证大多数情况下直接就完成了离线下载
-            offline_start = time()  # 离线开始时间
-            while (not done) and (time() - offline_start < 60 * 2):  # 要么完成要么超时
-                temp = get_offline_list(each_account)  # 获取离线列表
-                find = False  # 离线列表中找到了任务id的标志
-                for each_down in temp:
-                    if each_down['id'] == mag_id:  # 匹配上任务id就是找到了
-                        find = True
-                        if each_down['progress'] == 100 and each_down['message'] == 'Saved':  # 查看完成了吗
-                            done = True
-                            file_id = each_down['file_id']
-                            # 输出信息
-                            print_info = f'账号{each_account}离线下载磁链已完成：\n{mag_url_simple}\n文件名称：{mag_name}'
-                            context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
-                            logging.info(print_info)
-                        elif each_down['progress'] == 100:  # 可能存在错误但还是允许推送aria2下载了
-                            done = True
-                            file_id = each_down['file_id']
-                            # 输出信息
-                            print_info = f'账号{each_account}离线下载磁链已完成:\n{mag_url_simple}\n但含有错误信息：' \
-                                         f'{each_down["message"].strip()}！\n文件名称：{mag_name}'
-                            context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
-                            logging.warning(print_info)
-                        elif each_down['progress'] == 0:  # 共20s都卡在进度0，则认为网盘无法离线此文件
-                            if zero_process:  # 如果上一次查询就是零进度了，这次又是零进度
-                                find = False
-                                print_info = f'账号{each_account}离线{mag_url_simple}进度卡在0%，将取消离线任务'
+                # 查询是否离线完成
+                done = False  # 是否完成标志
+                zero_process = False  # 是否卡在零进度标志
+                logging.info('15s后将检查离线下载进度...')
+                sleep(15)  # 等待10秒，一般是秒离线，可以保证大多数情况下直接就完成了离线下载
+                offline_start = time()  # 离线开始时间
+                while (not done) and (time() - offline_start < 60 * 2):  # 要么完成要么超时
+                    temp = get_offline_list(each_account)  # 获取离线列表
+                    find = False  # 离线列表中找到了任务id的标志
+                    for each_down in temp:
+                        if each_down['id'] == mag_id:  # 匹配上任务id就是找到了
+                            find = True
+                            if each_down['progress'] == 100 and each_down['message'] == 'Saved':  # 查看完成了吗
+                                done = True
+                                file_id = each_down['file_id']
+                                # 输出信息
+                                print_info = f'账号{each_account}离线下载磁链已完成：\n{mag_url_simple}\n文件名称：{mag_name}'
+                                context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
+                                logging.info(print_info)
+                            elif each_down['progress'] == 100 or each_down['progress'] == 99:  # 可能存在错误但还是允许推送aria2下载了
+                                done = True
+                                file_id = each_down['file_id']
+                                # 输出信息
+                                print_info = f'账号{each_account}离线下载磁链已完成{each_down["progress"]}%:\n{mag_url_simple}\n但含有错误信息：' \
+                                            f'{each_down["message"].strip()}!\n文件名称：{mag_name}'
                                 context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
                                 logging.warning(print_info)
+                            elif each_down['progress'] == 0:  # 共20s都卡在进度0，则认为网盘无法离线此文件
+                                if zero_process:  # 如果上一次查询就是零进度了，这次又是零进度
+                                    find = False
+                                    print_info = f'账号{each_account}离线{mag_url_simple}进度卡在0%，将取消离线任务'
+                                    context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
+                                    logging.warning(print_info)
+                                else:
+                                    zero_process = True
+                                    logging.warning(
+                                        f'账号{each_account}离线{mag_url_simple}任务进度为0%，将在15s后再次查看...')
+                                    sleep(15)
                             else:
-                                zero_process = True
-                                logging.warning(
-                                    f'账号{each_account}离线{mag_url_simple}任务进度为0%，将在15s后再次查看...')
-                                sleep(15)
-                        else:
-                            logging.info(
-                                f'账号{each_account}离线下载{mag_url_simple}还未完成，进度{each_down["progress"]}...')
-                            sleep(5)
-                        # 只要找到了就可以退出查找循环
+                                logging.info(
+                                    f'账号{each_account}离线下载{mag_url_simple}还未完成，进度{each_down["progress"]}, 信息：{each_down["message"].strip()}! ...')
+                                sleep(5)
+                            # 只要找到了就可以退出查找循环
+                            break
+                    # 非正常退出查询离线完成方式
+                    if not find:  # 一轮下来没找到可能是删除或者添加失败等等异常
+                        print_info = f'账号{each_account}离线下载{mag_url_simple}的任务被取消！'
+                        context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
+                        logging.warning(print_info)
                         break
-                # 非正常退出查询离线完成方式
-                if not find:  # 一轮下来没找到可能是删除或者添加失败等等异常
-                    print_info = f'账号{each_account}离线下载{mag_url_simple}的任务被取消！'
-                    context.bot.send_message(chat_id=update.effective_chat.id, text=print_info)
-                    logging.warning(print_info)
-                    break
+            except Exception as e:
+                print_info = f'登陆{each_account}失败，{e}`'
+                logging.error(print_info)
+                continue
 
             # 查询账号是否完成离线
             if (find and done) or (not find and not done):  # 前者找到离线任务并且完成了，后者是要么手动取消了要么卡在进度0
@@ -745,7 +771,9 @@ def clean(update: Update, context: CallbackContext):
 
     elif argv[0] in ['a', 'all']:
         for temp_account in USER:
-            login(temp_account)
+            ok = login(temp_account)
+            if not ok:
+                continue
             all_file_id = list(get_folder_all(temp_account))
             # 如果没东西可删，那就下一个账号
             if len(all_file_id) == 0:
@@ -760,7 +788,9 @@ def clean(update: Update, context: CallbackContext):
     else:
         for each_account in argv:  # 输入参数是账户名称
             if each_account in USER:
-                login(each_account)
+                ok = login(each_account)
+                if not ok:
+                    continue
                 all_file_id = list(get_folder_all(each_account))
                 # logging.info(all_file_id)
                 # 如果没东西可删，那就下一个账号
@@ -852,7 +882,9 @@ def get_my_vip(account):
     if "error" in me_result:
         if me_result['error_code'] == 16:
             logging.info(f"账号{account}登录过期，正在重新登录")
-            login(account)
+            ok = login(account)
+            if not ok:
+                return 3
             login_headers = get_headers(account)
             me_result = requests.get(url=me_url, headers=login_headers, timeout=5).json()
         else:
